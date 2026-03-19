@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Exam Killer - AI 多模型比对 · 支持图片</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -118,11 +119,33 @@
     .screenshot-hint { position: fixed; bottom: 20px; right: 20px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; font-size: 13px; color: var(--text-dim); display: none; z-index: 1000; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
     .screenshot-hint.show { display: block; }
     .screenshot-hint strong { color: var(--text); }
+    
+    /* 答案折叠 */
+    .answer-section { margin-bottom: 8px; }
+    .answer-preview {
+      background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
+      border-radius: 10px; padding: 10px 14px; font-size: 15px; font-weight: 600;
+      color: var(--primary); margin-bottom: 6px;
+    }
+    .expand-btn {
+      background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+      padding: 5px 12px; font-size: 12px; color: var(--text-dim); cursor: pointer;
+      display: flex; align-items: center; gap: 4px; transition: all 0.15s;
+    }
+    .expand-btn:hover { border-color: var(--primary); color: var(--primary); }
+    .expand-btn svg { width: 12px; height: 12px; transition: transform 0.2s; }
+    .expand-btn.open svg { transform: rotate(180deg); }
+    .answer-detail { display: none; margin-top: 8px; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+    .answer-detail.open { display: block; }
+    .answer-detail pre { background: var(--bg-input); border-radius: 8px; padding: 10px; overflow-x: auto; font-size: 13px; margin-top: 8px; }
+    .answer-detail code { font-family: 'Fira Code', monospace; background: var(--bg-input); padding: 2px 5px; border-radius: 4px; }
+    .katex { font-size: 1.1em; }
+    .katex-display { margin: 8px 0; overflow-x: auto; }
   </style>
 </head>
 <body>
 <header>
-  <div class="logo">⚡ <span>Exam</span> Killer <small style="font-size:11px;color:var(--text-dim)">v6 · 支持图片</small></div>
+  <div class="logo">⚡ <span>Exam</span> Killer <small style="font-size:11px;color:var(--text-dim)">v7 · 支持图片</small></div>
   <div class="usage-badge">今日剩余: <strong id="remaining">--</strong> / <span id="limit">50</span> 次</div>
 </header>
 
@@ -388,10 +411,45 @@
     } catch(e) {}
   }
 
+  function extractKeyAnswer(text) {
+    if (!text) return '';
+    // 优先找 boxed 答案
+    const boxed = text.match(/\\?\\?boxed\{([^}]+)\}/);
+    if (boxed) return boxed[1].trim();
+    // 找 "最终答案" 后面的内容
+    const finalAns = text.match(/最终答案[：:]\s*[\$\\]*([^\$\n]+)/i);
+    if (finalAns) return finalAns[1].replace(/[\$\\]/g, '').trim();
+    // 找 "答案是" 后面的数字/表达式
+    const ans = text.match(/答案[是为]?\s*[\$\\]*([^\$\n]+)/i);
+    if (ans) return ans[1].replace(/[\$\\]/g, '').trim();
+    // 提取最后的等式/结果
+    const lastLine = text.split('\n').filter(l => l.trim() && !l.includes('**步骤') && !l.includes('---')).pop() || '';
+    return lastLine.replace(/[#*\[\]]/g, '').replace(/\$\$/g, '').trim() || text.slice(0, 60);
+  }
+
+  function renderLatex(text) {
+    if (!text) return '';
+    // 处理 $$...$$ display math
+    text = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, math) => {
+      try { return katex.renderToString(math.trim(), { displayMode: true, throwOnError: false }); } catch(e) { return m; }
+    });
+    // 处理 $...$ inline math
+    text = text.replace(/\$([^$\n]+?)\$/g, (m, math) => {
+      try { return katex.renderToString(math.trim(), { displayMode: false, throwOnError: false }); } catch(e) { return m; }
+    });
+    // code blocks
+    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+    text = text.replace(/\n/g, '<br>');
+    return text;
+  }
+
   function addResult(provider, answer, isBest, isVision) {
     const results = document.getElementById('results');
     const card = document.createElement('div');
     card.className = 'result-card' + (isBest ? ' best' : '');
+    const keyAns = extractKeyAnswer(answer);
+    const id = 'ans-' + Math.random().toString(36).slice(2);
     card.innerHTML = `
       <div class="result-header">
         <span class="provider-name">
@@ -400,17 +458,26 @@
           ${isBest ? '<span class="best-badge">✅ 推荐</span>' : ''}
         </span>
       </div>
-      <div class="answer">${formatContent(answer)}</div>
+      <div class="answer-preview" id="${id}-preview">📐 ${renderLatex(keyAns)}</div>
+      <button class="expand-btn" id="${id}-btn" onclick="toggleDetail('${id}')">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+        详细解答
+      </button>
+      <div class="answer-detail" id="${id}-detail">${renderLatex(answer)}</div>
     `;
     results.appendChild(card);
   }
 
-  function formatContent(text) {
-    if (!text) return '';
-    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-    text = text.replace(/\n/g, '<br>');
-    return text;
+  function toggleDetail(id) {
+    const detail = document.getElementById(id + '-detail');
+    const btn = document.getElementById(id + '-btn');
+    if (!detail) return;
+    const isOpen = detail.classList.contains('open');
+    detail.classList.toggle('open');
+    btn.classList.toggle('open');
+    btn.innerHTML = isOpen
+      ? '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>详细解答'
+      : '<svg viewBox="0 0 24 24" fill="currentColor" style="transform:rotate(180deg)"><path d="M7 10l5 5 5-5z"/></svg>收起';
   }
 
   function addComparison(summary, isConsensus) {
@@ -516,5 +583,6 @@
 
   loadUsage();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" defer></script>
 </body>
 </html>

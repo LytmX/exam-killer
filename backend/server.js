@@ -217,7 +217,7 @@ async function askSiliconVision(question, images, modelKey) {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '6.0.0',
+    version: '7.0.0',
     providers: Object.keys(SILICON_MODELS),
     vision_models: ['qwen-vl-72b', 'qwen-vl-32b', 'qwen3-vl-32b', 'qwen3-vl-8b'],
   });
