@@ -15,15 +15,12 @@ const RATE_LIMIT_DAILY = parseInt(process.env.RATE_LIMIT_DAILY || '50', 10);
 
 // Silicon Flow 模型列表
 const SILICON_MODELS = {
-  // 文本模型（每个系列只留最强一个）
-  'deepseek-v3':   'deepseek-ai/DeepSeek-V3',
-  'deepseek-r1':   'deepseek-ai/DeepSeek-R1',
-  'qwen-14b':      'Qwen/Qwen2.5-14B-Instruct',
-  'glm-4':         'zai-org/GLM-4-9B-Chat',
-  'kimi-k2':       'moonshotai/Kimi-K2-Instruct-0905',
+  // 推理模型（每个系列只留最强一个）
+  'deepseek-r1':    'deepseek-ai/DeepSeek-R1',
+  'kimi-thinking':   'moonshotai/Kimi-K2-Thinking',
+  'qwen-thinking':   'Qwen/Qwen3-30B-A3B-Thinking-2507',
   // 视觉模型（支持图片理解）
   'qwen-vl-72b':   'Qwen/Qwen2.5-VL-72B-Instruct',
-  'qwen3-vl-32b':  'Qwen/Qwen3-VL-32B-Instruct',
 };
 
 // 视觉模型 ID 集合
