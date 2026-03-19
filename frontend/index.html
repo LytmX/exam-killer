@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Exam Killer - AI 多模型比对 · 支持图片</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -86,6 +86,13 @@
     .quick-btn:hover { border-color: var(--primary); color: var(--primary); }
     .quick-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
     
+    .thinking-toggle { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+    .thinking-toggle input { display: none; }
+    .toggle-track { width: 36px; height: 20px; background: var(--bg-input); border-radius: 10px; position: relative; transition: background 0.2s; flex-shrink: 0; }
+    .toggle-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: white; border-radius: 50%; transition: transform 0.2s; }
+    .thinking-toggle input:checked + .toggle-track { background: var(--warning); }
+    .thinking-toggle input:checked + .toggle-track::after { transform: translateX(16px); }
+    
     /* 结果区 */
     .result-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin-bottom: 12px; }
     .result-card.best { border-color: var(--success); }
@@ -141,6 +148,7 @@
     .answer-detail code { font-family: 'Fira Code', monospace; background: var(--bg-input); padding: 2px 5px; border-radius: 4px; }
     .katex { font-size: 1.1em; }
     .katex-display { margin: 8px 0; overflow-x: auto; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
   </style>
 </head>
 <body>
@@ -194,10 +202,12 @@
       <div class="models-label">选择 AI 模型（可多选）：</div>
       <div class="models-grid">
         <div class="model-chip wolfram" onclick="toggleModel(this, 'wolfram')">📐 Wolfram Alpha</div>
+        <div class="model-chip" onclick="toggleModel(this, 'qwen-chat')">🐻 Qwen Turbo (极速)</div>
+        <div class="model-chip" onclick="toggleModel(this, 'deepseek-chat')">🧠 DeepSeek (流式)</div>
+        <div class="model-chip" onclick="toggleModel(this, 'kimi-chat')">🌙 Kimi (流式)</div>
         <div class="model-chip" onclick="toggleModel(this, 'silicon-deepseek-r1')">🧠 DeepSeek R1</div>
         <div class="model-chip" onclick="toggleModel(this, 'silicon-kimi-thinking')">🌙 Kimi K2 Thinking</div>
-        <div class="model-chip" onclick="toggleModel(this, 'silicon-qwen-thinking')">🐻 Qwen3-30B Thinking</div>
-        <div class="model-chip vision" onclick="toggleModel(this, 'silicon-qwen-vl-72b')">👁️ Qwen2.5-VL 72B（读图）</div>
+        <div class="model-chip vision" onclick="toggleModel(this, 'silicon-qwen-vl-72b')">👁️ Qwen2.5-VL（读图）</div>
       </div>
       <div class="quick-select">
         <button class="quick-btn" onclick="selectAll()">全选</button>
@@ -205,6 +215,12 @@
         <button class="quick-btn" onclick="selectVisionOnly()">只看图模型</button>
         <button class="quick-btn" onclick="clearAll()">清空</button>
       </div>
+      
+      <label class="thinking-toggle">
+        <input type="checkbox" id="thinkingToggle" onchange="toggleThinkingMode()">
+        <span class="toggle-track"></span>
+        🧠 深度思考（慢但更准，包含 DeepSeek R1 / Kimi / Qwen Thinking）
+      </label>
     </div>
   </div>
 
@@ -220,7 +236,7 @@
 <script>
   const API = '';
   let deviceId = localStorage.getItem('ek_did') || (localStorage.setItem('ek_did', Math.random().toString(36).slice(2)), localStorage.getItem('ek_did'));
-  let activeModels = new Set(['wolfram', 'silicon-deepseek-r1', 'silicon-kimi-thinking', 'silicon-qwen-thinking']);
+  let activeModels = new Set(['wolfram', 'qwen-chat']);
   let uploadedImages = []; // [{url: 'data:image/...;base64,...', thumb: '...'}]
   let isLoading = false;
 
@@ -237,13 +253,13 @@
 
   function selectAll() {
     document.querySelectorAll('.model-chip').forEach(c => c.classList.add('active'));
-    activeModels = new Set(['wolfram','silicon-deepseek-r1','silicon-kimi-thinking','silicon-qwen-thinking','silicon-qwen-vl-72b']);
+    activeModels = new Set(['wolfram','silicon-qwen-vl-72b']);
     document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('active'));
   }
 
   function selectDefault() {
     document.querySelectorAll('.model-chip').forEach(c => c.classList.remove('active'));
-    activeModels = new Set(['wolfram', 'silicon-deepseek-r1', 'silicon-kimi-thinking', 'silicon-qwen-thinking']);
+    activeModels = new Set(['wolfram']);
     activeModels.forEach(m => {
       const el = document.querySelector(`.model-chip[onclick*="'${m}'"]`);
       if (el) el.classList.add('active');
@@ -267,6 +283,24 @@
     document.querySelectorAll('.model-chip').forEach(c => c.classList.remove('active'));
     activeModels.clear();
     document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('thinkingToggle').checked = false;
+  }
+
+  function toggleThinkingMode() {
+    const toggle = document.getElementById('thinkingToggle');
+    if (toggle.checked) {
+      ['silicon-deepseek-r1', 'silicon-kimi-thinking', 'silicon-qwen-thinking'].forEach(m => {
+        activeModels.add(m);
+        const el = document.querySelector(`.model-chip[onclick*="'${m}'"]`);
+        if (el) el.classList.add('active');
+      });
+    } else {
+      ['silicon-deepseek-r1', 'silicon-kimi-thinking', 'silicon-qwen-thinking'].forEach(m => {
+        activeModels.delete(m);
+        const el = document.querySelector(`.model-chip[onclick*="'${m}'"]`);
+        if (el) el.classList.remove('active');
+      });
+    }
   }
 
   // 上传文件
@@ -333,8 +367,21 @@
 
   // 添加图片到列表
   function addImage(base64Url) {
-    uploadedImages.push({ url: base64Url });
-    renderImagePreviews();
+    // 压缩图片到最大 800px 宽，减少传输时间
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxW = 800;
+      let w = img.width, h = img.height;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      const compressed = canvas.toDataURL('image/jpeg', 0.7);
+      uploadedImages.push({ url: compressed });
+      renderImagePreviews();
+    };
+    img.src = base64Url;
   }
 
   // 移除图片
@@ -441,7 +488,7 @@
     return text;
   }
 
-  function addResult(provider, answer, isBest, isVision) {
+  function addResult(provider, answer, isBest, isVision, isStreaming) {
     const results = document.getElementById('results');
     const card = document.createElement('div');
     card.className = 'result-card' + (isBest ? ' best' : '');
@@ -454,8 +501,9 @@
           ${isVision ? '<span class="provider-tag vision">👁️ 视觉</span>' : ''}
           ${isBest ? '<span class="best-badge">✅ 推荐</span>' : ''}
         </span>
+        ${isStreaming ? '<span class="streaming-dot" style="width:8px;height:8px;background:#22c55e;border-radius:50%;animation:blink 1s infinite"></span>' : ''}
       </div>
-      <div class="answer-preview" id="${id}-preview">📐 ${renderLatex(keyAns)}</div>
+      <div class="answer-preview" id="${id}-preview">📐 ${keyAns ? renderLatex(keyAns) : '<span style="color:var(--text-dim);font-weight:400">正在生成...</span>'}</div>
       <button class="expand-btn" id="${id}-btn" onclick="toggleDetail('${id}')">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
         详细解答
@@ -463,6 +511,34 @@
       <div class="answer-detail" id="${id}-detail">${renderLatex(answer)}</div>
     `;
     results.appendChild(card);
+    return id;
+  }
+
+  function updateStreamingResult(id, text) {
+    const preview = document.getElementById(id + '-preview');
+    const detail = document.getElementById(id + '-detail');
+    if (preview) preview.innerHTML = '📐 ' + (renderLatex(text) || '<span style="color:var(--text-dim)">正在生成...</span>');
+    if (detail) detail.innerHTML = renderLatex(text);
+  }
+
+  function finalizeResult(id, provider, answer, isBest, isVision) {
+    const card = document.getElementById(id) ? document.getElementById(id).closest('.result-card') : null;
+    if (card) {
+      const dot = card.querySelector('.streaming-dot');
+      if (dot) dot.remove();
+      const header = card.querySelector('.result-header');
+      if (isBest && header) {
+        const badge = document.createElement('span');
+        badge.className = 'best-badge';
+        badge.textContent = '✅ 推荐';
+        header.appendChild(badge);
+      }
+    }
+    const preview = document.getElementById(id + '-preview');
+    const detail = document.getElementById(id + '-detail');
+    const keyAns = extractKeyAnswer(answer);
+    if (preview) preview.innerHTML = '📐 ' + (keyAns ? renderLatex(keyAns) : renderLatex(answer).slice(0, 100));
+    if (detail) detail.innerHTML = renderLatex(answer);
   }
 
   function toggleDetail(id) {
@@ -506,64 +582,106 @@
       </div>
     `;
     
-    let res;
+    // 流式 SSE
     try {
       const providers = Array.from(activeModels);
-      res = await fetch(`${API}/api/ask`, {
+      const hasDeepSeek = providers.includes('deepseek-chat');
+      const res = await fetch(`${API}/api/ask/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Device-ID': deviceId },
         body: JSON.stringify({ question, providers, images: uploadedImages }),
       });
+      
+      if (!res.ok) {
+        const text = await res.text();
+        document.getElementById('results').innerHTML = `<div class="error-card">❌ 服务器错误 (HTTP ${res.status})，请稍后重试</div>`;
+        isLoading = false; document.getElementById('send').disabled = false;
+        return;
+      }
+      
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const streamingCards = {}; // provider -> cardId
+      let allDone = false;
+      
+      // 预创建所有模型的卡片
+      for (const p of providers) {
+        let label = p;
+        if (p === 'wolfram') label = 'Wolfram Alpha';
+        else if (p === 'deepseek-chat') label = 'DeepSeek (直连)';
+        else if (p === 'silicon-deepseek-r1') label = 'Silicon Flow (DEEPSEEK-R1)';
+        else if (p === 'silicon-kimi-thinking') label = 'Silicon Flow (KIMI-THINKING)';
+        else if (p === 'silicon-qwen-thinking') label = 'Silicon Flow (QWEN-THINKING)';
+        else if (p === 'silicon-qwen-vl-72b') label = 'Silicon Flow (QWEN-VL +视觉)';
+        const isStreaming = (p === 'deepseek-chat' || p === 'kimi-chat');
+        const cid = addResult(label, '', false, false, isStreaming);
+        streamingCards[p] = cid;
+      }
+      document.getElementById('results').innerHTML = ''; // 清空 loading
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+          try {
+            const msg = JSON.parse(jsonStr);
+            if (msg.type === 'info') {
+              // 图片识别信息
+              continue;
+            }
+            if (msg.done) {
+              allDone = true;
+              continue;
+            }
+            if (msg.error) {
+              // 错误
+              const cid = streamingCards[msg.provider] || Object.values(streamingCards)[0];
+              if (cid) {
+                const preview = document.getElementById(cid + '-preview');
+                if (preview) preview.innerHTML = `<span style="color:var(--error)">❌ ${msg.error}</span>`;
+              }
+              continue;
+            }
+            if (msg.type === 'answer' && msg.provider) {
+              // 完整答案到达
+              const cid = streamingCards[msg.provider] || Object.values(streamingCards)[0];
+              if (cid) finalizeResult(cid, msg.provider, msg.answer || '', false, msg.provider.includes('视觉'));
+            } else if (msg.chunk !== undefined && msg.provider) {
+              // 流式 chunk 累积
+              const cid = streamingCards[msg.provider];
+              if (cid) {
+                const existing = document.getElementById(cid + '-detail');
+                const currentText = existing ? existing.innerHTML : '';
+                // 用纯文本累积
+                if (!window._streamText) window._streamText = {};
+                if (!window._streamText[cid]) window._streamText[cid] = '';
+                window._streamText[cid] += msg.chunk;
+                updateStreamingResult(cid, window._streamText[cid]);
+              }
+            }
+          } catch {}
+        }
+      }
+      
+      // 最终化所有未完成的卡片
+      for (const [p, cid] of Object.entries(streamingCards)) {
+        if (cid) finalizeResult(cid, p, window._streamText?.[cid] || '', false, p.includes('视觉'));
+      }
+      if (window._streamText) delete window._streamText;
+      
+      if (!allDone) {
+        document.getElementById('results').innerHTML = `<div class="error-card">❌ 连接中断，请重试</div>`;
+      }
+      
     } catch(e) {
       document.getElementById('results').innerHTML = `<div class="error-card">❌ 网络错误：${e.message}</div>`;
-      isLoading = false;
-      document.getElementById('send').disabled = false;
-      return;
-    }
-    
-    let data;
-    try {
-      data = await res.json();
-    } catch {
-      const text = await res.text().catch(() => '');
-      if (res.status === 413 || text.includes('413') || text.includes('Request Entity Too Large')) {
-        document.getElementById('results').innerHTML = `<div class="error-card">❌ 图片太大了，请减少图片数量或压缩后重试</div>`;
-      } else {
-        document.getElementById('results').innerHTML = `<div class="error-card">❌ 服务器错误 (HTTP ${res.status})，请稍后重试</div>`;
-      }
-      isLoading = false;
-      document.getElementById('send').disabled = false;
-      return;
-    }
-    
-    document.getElementById('results').innerHTML = '';
-    
-    if (res.status === 429) {
-      document.getElementById('results').innerHTML = `<div class="error-card">⏰ ${data.message || '今日次数已用完'}</div>`;
-      isLoading = false;
-      document.getElementById('send').disabled = false;
-      return;
-    }
-    
-    if (data.error) {
-      document.getElementById('results').innerHTML = `<div class="error-card">❌ ${data.error}</div>`;
-      isLoading = false;
-      document.getElementById('send').disabled = false;
-      return;
-    }
-    
-    if (data.comparison) {
-      addComparison(data.comparison.summary, data.comparison.consensus);
-    }
-    
-    if (data.answers && data.answers.length > 0) {
-      data.answers.forEach(a => {
-        const isBest = data.comparison?.bestAnswer?.provider === a.provider;
-        const isVision = a.provider.toLowerCase().includes('vl') || a.provider.toLowerCase().includes('视觉');
-        addResult(a.provider, a.answer, isBest, isVision);
-      });
-    } else {
-      document.getElementById('results').innerHTML = `<div class="empty"><h2>😕 没有得到答案</h2><p>所有 AI 均未能解答此问题</p></div>`;
     }
     
     loadUsage();
@@ -580,6 +698,6 @@
 
   loadUsage();
 </script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" defer></script>
+<script src="/vendor/katex.min.js"></script>
 </body>
 </html>
