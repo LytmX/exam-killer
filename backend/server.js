@@ -1,33 +1,61 @@
 /**
- * Exam Killer Backend
- * AI 答题聚合器 - 代理到 Zero Token Gateway
+ * Exam Killer Backend v6
+ * 多 AI 比对 + 图片理解 — Wolfram Alpha + Silicon Flow 多模型(含视觉)
  */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
-const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ZERO_TOKEN_URL = process.env.ZERO_TOKEN_URL || 'http://localhost:3002';
-const ZERO_TOKEN_KEY = process.env.ZERO_TOKEN_KEY || '';
-const RATE_LIMIT_DAILY = parseInt(process.env.RATE_LIMIT_DAILY || '20', 10);
+const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID || 'RKVT57E2AW';
+const SILICON_FLOW_KEY = process.env.SILICON_FLOW_KEY || 'sk-aqkjcimcfnyvwslqgtjcbwuflcnpizhhikmrglioiogwolrw';
+const RATE_LIMIT_DAILY = parseInt(process.env.RATE_LIMIT_DAILY || '50', 10);
 
-// In-memory user store (for demo - use Redis/DB in production)
+// Silicon Flow 模型列表
+const SILICON_MODELS = {
+  // 文本模型
+  'deepseek-v3':   'deepseek-ai/DeepSeek-V3',
+  'deepseek-r1':   'deepseek-ai/DeepSeek-R1',
+  'qwen-14b':      'Qwen/Qwen2.5-14B-Instruct',
+  'qwen-7b':       'Qwen/Qwen2.5-7B-Instruct',
+  'glm-4':         'zai-org/GLM-4-9B-Chat',
+  'glm-4.6':       'zai-org/GLM-4.6',
+  'qwen-3.5-9b':   'Qwen/Qwen3.5-9B',
+  'qwen-3.5-27b':  'Qwen/Qwen3.5-27B',
+  // 视觉模型（支持图片理解）
+  'qwen-vl-72b':   'Qwen/Qwen2.5-VL-72B-Instruct',
+  'qwen-vl-32b':   'Qwen/Qwen2.5-VL-32B-Instruct',
+  'qwen3-vl-32b':  'Qwen/Qwen3-VL-32B-Instruct',
+  'qwen3-vl-8b':   'Qwen/Qwen3-VL-8B-Instruct',
+};
+
+// 视觉模型 ID 集合
+const VISION_MODEL_IDS = new Set([
+  'Qwen/Qwen2.5-VL-72B-Instruct',
+  'Qwen/Qwen2.5-VL-32B-Instruct',
+  'Qwen/Qwen3-VL-32B-Instruct',
+  'Qwen/Qwen3-VL-32B-Thinking',
+  'Qwen/Qwen3-VL-8B-Instruct',
+  'Qwen/Qwen3-VL-8B-Thinking',
+  'Qwen/Qwen3-VL-30B-A3B-Instruct',
+  'Qwen/Qwen3-VL-30B-A3B-Thinking',
+  'Qwen/Qwen3-VL-235B-A22B-Instruct',
+  'Qwen/Qwen3-VL-235B-A22B-Thinking',
+]);
+
 const userUsage = new Map();
 
 function getUserId(req) {
-  // Use IP + a simple device ID header, fallback to IP
   return req.headers['x-device-id'] || req.ip || 'anonymous';
 }
 
 function checkRateLimit(userId) {
   const today = new Date().toISOString().split('T')[0];
   const key = `${userId}:${today}`;
-  const usage = userUsage.get(key) || 0;
-  return { allowed: usage < RATE_LIMIT_DAILY, used: usage, limit: RATE_LIMIT_DAILY };
+  const used = userUsage.get(key) || 0;
+  return { allowed: used < RATE_LIMIT_DAILY, used, limit: RATE_LIMIT_DAILY };
 }
 
 function incrementUsage(userId) {
@@ -36,174 +64,337 @@ function incrementUsage(userId) {
   userUsage.set(key, (userUsage.get(key) || 0) + 1);
 }
 
-// Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.static('../frontend'));
+app.use(express.json({ limit: '50mb' }));
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '1.0.0' });
-});
+// ==================== AI Providers ====================
 
-// Usage status
-app.get('/api/usage', (req, res) => {
-  const userId = getUserId(req);
-  const { used, limit } = checkRateLimit(userId);
-  res.json({ used, limit, remaining: Math.max(0, limit - used) });
-});
-
-// List available models
-app.get('/api/models', async (req, res) => {
+async function askWolframAlpha(question) {
   try {
-    const response = await axios.get(`${ZERO_TOKEN_URL}/v1/models`, {
-      headers: ZERO_TOKEN_KEY ? { 'Authorization': `Bearer ${ZERO_TOKEN_KEY}` } : {},
-      timeout: 5000,
-    });
-    res.json(response.data);
-  } catch (error) {
-    res.status(500).json({ error: '无法获取模型列表', detail: error.message });
-  }
-});
-
-// Chat completion - the main API
-app.post('/api/chat', async (req, res) => {
-  const userId = getUserId(req);
-  const { allowed, used, limit } = checkRateLimit(userId);
-
-  if (!allowed) {
-    return res.status(429).json({
-      error: '今日次数已用完',
-      used,
-      limit,
-      message: `免费用户每天 ${limit} 次，您今天已用完。明天再来吧 🎓`
-    });
-  }
-
-  const { message, model = 'deepseek-web/deepseek-chat', system = '' } = req.body;
-
-  if (!message) {
-    return res.status(400).json({ error: 'message 是必填项' });
-  }
-
-  incrementUsage(userId);
-
-  try {
-    const messages = [];
-    if (system) {
-      messages.push({ role: 'system', content: system });
+    const url = `https://api.wolframalpha.com/v2/query?${new URLSearchParams({
+      input: question,
+      appid: WOLFRAM_APP_ID,
+      output: 'json',
+    })}`;
+    
+    const response = await axios.get(url, { timeout: 15000 });
+    const data = response.data;
+    const queryresult = data?.queryresult;
+    
+    if (!queryresult || queryresult.success === false) {
+      return { provider: 'Wolfram Alpha', error: '无法解答此问题', answer: null, confidence: 0 };
     }
-    messages.push({ role: 'user', content: message });
+    
+    const pods = queryresult.pods || [];
+    let answer = '';
+    let steps = '';
+    
+    for (const pod of pods) {
+      const title = (pod.title || '').toLowerCase();
+      const plaintext = pod.subpods?.map(s => s.plaintext).filter(Boolean).join('\n') || '';
+      if (title.includes('result') || title.includes('solutions') || title.includes('answer')) {
+        if (plaintext && !answer) answer = plaintext;
+      }
+      if (title.includes('step') || title.includes('derivation')) {
+        if (plaintext) steps = plaintext;
+      }
+    }
+    
+    if (!answer) {
+      for (const pod of pods) {
+        const text = pod.subpods?.map(s => s.plaintext).filter(Boolean).join('\n');
+        if (text) { answer = text; break; }
+      }
+    }
 
-    // Proxy to Zero Token Gateway
+    return { 
+      provider: 'Wolfram Alpha', 
+      answer: answer || '无解析结果',
+      steps: steps || '',
+      confidence: answer ? 0.95 : 0.2,
+    };
+  } catch (error) {
+    return { provider: 'Wolfram Alpha', error: error.message, answer: null, confidence: 0 };
+  }
+}
+
+// Silicon Flow 文本模型
+async function askSiliconText(question, modelKey) {
+  const modelId = SILICON_MODELS[modelKey];
+  if (!modelId) return { provider: `Silicon Flow (${modelKey})`, error: '未知模型', answer: null, confidence: 0 };
+  
+  try {
     const response = await axios.post(
-      `${ZERO_TOKEN_URL}/v1/chat/completions`,
+      'https://api.siliconflow.cn/v1/chat/completions',
       {
-        model,
-        messages,
+        model: modelId,
+        messages: [{
+          role: 'user',
+          content: `你是一个专业的 AI 答题助手。请解答以下问题，给出详细步骤和最终答案。\n\n问题：${question}`,
+        }],
         stream: false,
       },
       {
         headers: {
+          'Authorization': `Bearer ${SILICON_FLOW_KEY}`,
           'Content-Type': 'application/json',
-          ...(ZERO_TOKEN_KEY ? { 'Authorization': `Bearer ${ZERO_TOKEN_KEY}` } : {}),
         },
-        timeout: 60000,
-        responseType: 'json',
+        timeout: 90000,
       }
     );
-
-    res.json({
-      ...response.data,
-      usage: {
-        ...checkRateLimit(userId),
-        dailyLimit: limit,
-      }
-    });
+    
+    const answer = response.data?.choices?.[0]?.message?.content || '';
+    return {
+      provider: `Silicon Flow (${modelKey.toUpperCase()})`,
+      model: modelId,
+      answer,
+      steps: '',
+      confidence: 0.85,
+    };
   } catch (error) {
-    console.error('Zero Token error:', error.message);
-    res.status(500).json({
-      error: 'AI 服务暂时不可用，请稍后再试',
-      detail: error.response?.data?.error || error.message,
-    });
+    const msg = error.response?.data?.error?.message || error.message;
+    return { provider: `Silicon Flow (${modelKey.toUpperCase()})`, error: msg, answer: null, confidence: 0 };
   }
-});
+}
 
-// Streaming chat
-app.post('/api/chat/stream', async (req, res) => {
-  const userId = getUserId(req);
-  const { allowed, used, limit } = checkRateLimit(userId);
-
-  if (!allowed) {
-    res.status(429).json({
-      error: '今日次数已用完',
-      message: `免费用户每天 ${limit} 次，您今天已用完。明天再来吧 🎓`
-    });
-    return;
-  }
-
-  const { message, model = 'deepseek-web/deepseek-chat', system = '' } = req.body;
-
-  if (!message) {
-    res.status(400).json({ error: 'message 是必填项' });
-    return;
-  }
-
-  incrementUsage(userId);
-
-  const messages = [];
-  if (system) {
-    messages.push({ role: 'system', content: system });
-  }
-  messages.push({ role: 'user', content: message });
-
+// Silicon Flow 视觉模型（支持图片理解）
+async function askSiliconVision(question, images, modelKey) {
+  const modelId = SILICON_MODELS[modelKey];
+  if (!modelId) return { provider: `Silicon Flow (${modelKey})`, error: '未知模型', answer: null, confidence: 0 };
+  
   try {
+    // 构建多模态消息内容
+    const content = [];
+    
+    // 文本部分
+    let textPrompt = question;
+    if (images && images.length > 0) {
+      textPrompt = `请看这张图片，解答以下问题。如果图片中有图表、坐标系、表格或示意图，请仔细分析后再作答。\n\n问题：${question}`;
+    }
+    content.push({ type: 'text', text: textPrompt });
+    
+    // 图片部分（支持多张）
+    if (images && images.length > 0) {
+      for (const img of images) {
+        content.push({
+          type: 'image_url',
+          image_url: {
+            url: img.url.startsWith('data:') ? img.url : `data:image/jpeg;base64,${img.url}`,
+            detail: 'high',
+          },
+        });
+      }
+    }
+    
     const response = await axios.post(
-      `${ZERO_TOKEN_URL}/v1/chat/completions`,
+      'https://api.siliconflow.cn/v1/chat/completions',
       {
-        model,
-        messages,
-        stream: true,
+        model: modelId,
+        messages: [{ role: 'user', content }],
+        stream: false,
       },
       {
         headers: {
+          'Authorization': `Bearer ${SILICON_FLOW_KEY}`,
           'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          ...(ZERO_TOKEN_KEY ? { 'Authorization': `Bearer ${ZERO_TOKEN_KEY}` } : {}),
         },
         timeout: 120000,
-        responseType: 'stream',
       }
     );
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    response.data.on('data', (chunk) => {
-      res.write(chunk);
-    });
-
-    response.data.on('end', () => {
-      res.end();
-    });
-
-    response.data.on('error', (err) => {
-      console.error('Stream error:', err.message);
-      res.end();
-    });
+    
+    const answer = response.data?.choices?.[0]?.message?.content || '';
+    return {
+      provider: `Silicon Flow (${modelKey.toUpperCase()} +视觉)`,
+      model: modelId,
+      answer,
+      steps: '',
+      confidence: 0.88,
+      images: images ? images.length : 0,
+    };
   } catch (error) {
-    console.error('Stream error:', error.message);
-    if (!res.headersSent) {
-      res.status(500).json({ error: '流式响应失败' });
-    } else {
-      res.end();
-    }
+    const msg = error.response?.data?.error?.message || error.message;
+    return { provider: `Silicon Flow (${modelKey.toUpperCase()} +视觉)`, error: msg, answer: null, confidence: 0 };
   }
+}
+
+// ==================== Routes ====================
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    version: '6.0.0', 
+    providers: Object.keys(SILICON_MODELS),
+    vision_models: ['qwen-vl-72b', 'qwen-vl-32b', 'qwen3-vl-32b', 'qwen3-vl-8b'],
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`Exam Killer Backend running on http://localhost:${PORT}`);
-  console.log(`Zero Token Gateway: ${ZERO_TOKEN_URL}`);
-  console.log(`Daily rate limit: ${RATE_LIMIT_DAILY} requests per IP`);
+app.get('/api/models', (req, res) => {
+  const text = Object.entries(SILICON_MODELS)
+    .filter(([k]) => !k.startsWith('qwen-vl') && !k.startsWith('qwen3-vl'))
+    .map(([key, id]) => ({ key, id, type: 'text' }));
+  const vision = Object.entries(SILICON_MODELS)
+    .filter(([k]) => k.startsWith('qwen-vl') || k.startsWith('qwen3-vl'))
+    .map(([key, id]) => ({ key, id, type: 'vision' }));
+  res.json({ text, vision, all: Object.entries(SILICON_MODELS).map(([key, id]) => ({ key, id })) });
+});
+
+app.get('/api/usage', (req, res) => {
+  const { used, limit } = checkRateLimit(getUserId(req));
+  res.json({ used, limit, remaining: Math.max(0, limit - used) });
+});
+
+app.post('/api/ask', async (req, res) => {
+  const userId = getUserId(req);
+  const { allowed } = checkRateLimit(userId);
+  
+  if (!allowed) {
+    return res.status(429).json({
+      error: '今日次数已用完',
+      message: `免费用户每天 ${RATE_LIMIT_DAILY} 次，明天再来吧 🎓`,
+    });
+  }
+  
+  // providers: wolfram, silicon-deepseek-v3, silicon-qwen-14b, silicon-qwen-vl-72b, ...
+  // images: [{url: 'data:image/...;base64,...'}] 或 [{url: 'https://...'}] 
+  const { question, providers = ['wolfram', 'silicon-deepseek-v3', 'silicon-qwen-vl-72b'], images = [] } = req.body;
+  
+  if (!question?.trim() && images.length === 0) {
+    return res.status(400).json({ error: 'question 或 images 是必填项' });
+  }
+  
+  incrementUsage(userId);
+  
+  const tasks = [];
+  for (const p of providers) {
+    if (p === 'wolfram') {
+      // Wolfram 不支持图片，纯文本
+      if (images.length === 0) {
+        tasks.push(askWolframAlpha(question));
+      }
+    } else if (p.startsWith('silicon-')) {
+      const modelKey = p.replace('silicon-', '');
+      const modelId = SILICON_MODELS[modelKey];
+      if (!modelId) continue;
+      
+      if (VISION_MODEL_IDS.has(modelId)) {
+        // 视觉模型：传入图片
+        tasks.push(askSiliconVision(question, images, modelKey));
+      } else {
+        // 文本模型：如果有图片就跳过（不支持）
+        if (images.length === 0) {
+          tasks.push(askSiliconText(question, modelKey));
+        }
+      }
+    }
+  }
+  
+  if (tasks.length === 0) {
+    return res.json({
+      question,
+      images: images.length,
+      answers: [],
+      comparison: images.length > 0 
+        ? '所选模型均不支持图片，或无可用文本模型' 
+        : '请至少选择一个可用的 AI 模型',
+      bestAnswer: null,
+    });
+  }
+  
+  const results = await Promise.allSettled(tasks);
+  const answers = results
+    .filter(r => r.status === 'fulfilled' && r.value?.answer)
+    .map(r => r.value);
+  
+  if (answers.length === 0) {
+    return res.json({
+      question,
+      images: images.length,
+      answers: [],
+      comparison: '所有 AI 均无法解答此问题',
+      bestAnswer: null,
+    });
+  }
+  
+  const comparison = analyzeComparison(answers);
+  
+  res.json({
+    question,
+    images: images.length,
+    answers,
+    comparison,
+    bestAnswer: comparison.bestAnswer,
+    stats: { count: answers.length, ...checkRateLimit(userId) },
+  });
+});
+
+// 图片上传接口（支持 base64 或 URL）
+app.post('/api/upload', async (req, res) => {
+  const { image } = req.body; // base64 或 URL
+  if (!image) return res.status(400).json({ error: 'image 是必填项' });
+  
+  // 简单验证：是否为有效 base64 或 URL
+  const isBase64 = image.startsWith('data:') || /^[A-Za-z0-9+/=]{50,}$/.test(image);
+  const isUrl = image.startsWith('http://') || image.startsWith('https://');
+  
+  if (!isBase64 && !isUrl) {
+    return res.status(400).json({ error: '无效的图片格式' });
+  }
+  
+  res.json({ success: true, hasImage: true });
+});
+
+function analyzeComparison(answers) {
+  if (answers.length === 1) {
+    return {
+      summary: `仅有 ${answers[0].provider} 给出了答案`,
+      bestAnswer: answers[0],
+      consensus: true,
+    };
+  }
+  
+  // 提取数字找共识
+  const texts = answers.map(a => 
+    (a.answer || '').toLowerCase()
+      .replace(/[^\w\.\-\+\=\≈≈]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+  
+  const numbers = texts.map(t => {
+    const matches = t.match(/[\d\.\-\+]+/g);
+    return matches ? matches[0] : null;
+  }).filter(Boolean);
+  
+  const consensusNumber = numbers.length > 1 
+    ? numbers.find(n => numbers.filter(x => x === n).length > answers.length / 2) 
+    : null;
+  
+  if (consensusNumber) {
+    const agreeing = answers.filter(a => (a.answer || '').includes(consensusNumber));
+    return {
+      summary: `${agreeing.length}/${answers.length} 个 AI 达成共识：${consensusNumber}`,
+      bestAnswer: agreeing[0],
+      consensus: true,
+      consensusNumber,
+    };
+  }
+  
+  const best = answers.reduce((a, b) => (a.confidence > b.confidence ? a : b));
+  return {
+    summary: `${answers.length} 个 AI 给出不同答案，建议核实`,
+    bestAnswer: best,
+    consensus: false,
+    answers: answers.map(a => ({
+      provider: a.provider,
+      answer: (a.answer || '').slice(0, 500),
+      confidence: a.confidence,
+    })),
+  };
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Exam Killer v6.0 running on :${PORT}`);
+  console.log(`Text models: ${Object.entries(SILICON_MODELS).filter(([k]) => !k.startsWith('qwen-vl') && !k.startsWith('qwen3-vl')).map(([k]) => k).join(', ')}`);
+  console.log(`Vision models: ${Object.entries(SILICON_MODELS).filter(([k]) => k.startsWith('qwen-vl') || k.startsWith('qwen3-vl')).map(([k]) => k).join(', ')}`);
+  console.log(`Rate limit: ${RATE_LIMIT_DAILY}/day per IP`);
 });
