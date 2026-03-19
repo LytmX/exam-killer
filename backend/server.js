@@ -10,25 +10,19 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const WOLFRAM_APP_ID = process.env.WOLFRAM_APP_ID || 'RKVT57E2AW';
-const SILICON_FLOW_KEY = process.env.SILICON_FLOW_KEY || 'sk-aqkjcimcfnyvwslqgtjcbwuflcnpizhhikmrglioiogwolrw';
+const SILICON_FLOW_KEY = process.env.SILICON_FLOW_KEY;
 const RATE_LIMIT_DAILY = parseInt(process.env.RATE_LIMIT_DAILY || '50', 10);
 
 // Silicon Flow 模型列表
 const SILICON_MODELS = {
-  // 文本模型
+  // 文本模型（每个系列只留最强一个）
   'deepseek-v3':   'deepseek-ai/DeepSeek-V3',
   'deepseek-r1':   'deepseek-ai/DeepSeek-R1',
   'qwen-14b':      'Qwen/Qwen2.5-14B-Instruct',
-  'qwen-7b':       'Qwen/Qwen2.5-7B-Instruct',
   'glm-4':         'zai-org/GLM-4-9B-Chat',
-  'glm-4.6':       'zai-org/GLM-4.6',
-  'qwen-3.5-9b':   'Qwen/Qwen3.5-9B',
-  'qwen-3.5-27b':  'Qwen/Qwen3.5-27B',
   // 视觉模型（支持图片理解）
   'qwen-vl-72b':   'Qwen/Qwen2.5-VL-72B-Instruct',
-  'qwen-vl-32b':   'Qwen/Qwen2.5-VL-32B-Instruct',
   'qwen3-vl-32b':  'Qwen/Qwen3-VL-32B-Instruct',
-  'qwen3-vl-8b':   'Qwen/Qwen3-VL-8B-Instruct',
 };
 
 // 视觉模型 ID 集合
