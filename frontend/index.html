@@ -174,12 +174,10 @@
         <div class="model-chip" onclick="toggleModel(this, 'silicon-deepseek-v3')">🧠 DeepSeek V3</div>
         <div class="model-chip" onclick="toggleModel(this, 'silicon-deepseek-r1')">🧠 DeepSeek R1</div>
         <div class="model-chip" onclick="toggleModel(this, 'silicon-qwen-14b')">🐻 Qwen 14B</div>
-        <div class="model-chip" onclick="toggleModel(this, 'silicon-qwen-7b')">🐻 Qwen 7B</div>
+        <div class="model-chip" onclick="toggleModel(this, 'silicon-glm-4')">🔬 GLM-4 9B</div>
+        <div class="model-chip" onclick="toggleModel(this, 'silicon-kimi-k2')">🌙 Kimi K2</div>
         <div class="model-chip vision active" onclick="toggleModel(this, 'silicon-qwen-vl-72b')">👁️ Qwen2.5-VL 72B（读图）</div>
-        <div class="model-chip vision" onclick="toggleModel(this, 'silicon-qwen-vl-32b')">👁️ Qwen2.5-VL 32B（读图）</div>
-        <div class="model-chip" onclick="toggleModel(this, 'silicon-glm-4')">🔬 GLM-4</div>
-        <div class="model-chip" onclick="toggleModel(this, 'silicon-qwen-3.5-9b')">🦊 Qwen 3.5 9B</div>
-        <div class="model-chip" onclick="toggleModel(this, 'silicon-qwen-3.5-27b')">🦊 Qwen 3.5 27B</div>
+        <div class="model-chip vision" onclick="toggleModel(this, 'silicon-qwen3-vl-32b')">👁️ Qwen3-VL 32B（读图）</div>
       </div>
       <div class="quick-select">
         <button class="quick-btn" onclick="selectAll()">全选</button>
@@ -202,7 +200,7 @@
 <script>
   const API = '';
   let deviceId = localStorage.getItem('ek_did') || (localStorage.setItem('ek_did', Math.random().toString(36).slice(2)), localStorage.getItem('ek_did'));
-  let activeModels = new Set(['silicon-qwen-vl-72b', 'silicon-deepseek-v3']);
+  let activeModels = new Set(['silicon-deepseek-v3', 'silicon-qwen-vl-72b', 'silicon-kimi-k2']);
   let uploadedImages = []; // [{url: 'data:image/...;base64,...', thumb: '...'}]
   let isLoading = false;
 
@@ -219,13 +217,13 @@
 
   function selectAll() {
     document.querySelectorAll('.model-chip').forEach(c => c.classList.add('active'));
-    activeModels = new Set(['wolfram','silicon-deepseek-v3','silicon-deepseek-r1','silicon-qwen-14b','silicon-qwen-7b','silicon-qwen-vl-72b','silicon-qwen-vl-32b','silicon-glm-4','silicon-qwen-3.5-9b','silicon-qwen-3.5-27b']);
+    activeModels = new Set(['wolfram','silicon-deepseek-v3','silicon-deepseek-r1','silicon-qwen-14b','silicon-glm-4','silicon-kimi-k2','silicon-qwen-vl-72b','silicon-qwen3-vl-32b']);
     document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('active'));
   }
 
   function selectDefault() {
     document.querySelectorAll('.model-chip').forEach(c => c.classList.remove('active'));
-    activeModels = new Set(['silicon-qwen-vl-72b', 'silicon-deepseek-v3', 'silicon-qwen-vl-32b']);
+    activeModels = new Set(['silicon-deepseek-v3', 'silicon-qwen-vl-72b', 'silicon-kimi-k2']);
     activeModels.forEach(m => {
       const el = document.querySelector(`.model-chip[onclick*="'${m}'"]`);
       if (el) el.classList.add('active');
@@ -236,7 +234,7 @@
 
   function selectVisionOnly() {
     document.querySelectorAll('.model-chip').forEach(c => c.classList.remove('active'));
-    activeModels = new Set(['silicon-qwen-vl-72b', 'silicon-qwen-vl-32b']);
+    activeModels = new Set(['silicon-qwen-vl-72b', 'silicon-qwen3-vl-32b']);
     activeModels.forEach(m => {
       const el = document.querySelector(`.model-chip[onclick*="'${m}'"]`);
       if (el) el.classList.add('active');
@@ -444,48 +442,69 @@
       </div>
     `;
     
+    let res;
     try {
       const providers = Array.from(activeModels);
-      const res = await fetch(`${API}/api/ask`, {
+      res = await fetch(`${API}/api/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Device-ID': deviceId },
         body: JSON.stringify({ question, providers, images: uploadedImages }),
       });
-      
-      const data = await res.json();
-      document.getElementById('results').innerHTML = '';
-      
-      if (res.status === 429) {
-        document.getElementById('results').innerHTML = `<div class="error-card">⏰ ${data.message}</div>`;
-        return;
-      }
-      
-      if (data.error) {
-        document.getElementById('results').innerHTML = `<div class="error-card">❌ ${data.error}</div>`;
-        return;
-      }
-      
-      if (data.comparison) {
-        addComparison(data.comparison.summary, data.comparison.consensus);
-      }
-      
-      if (data.answers && data.answers.length > 0) {
-        data.answers.forEach(a => {
-          const isBest = data.comparison?.bestAnswer?.provider === a.provider;
-          const isVision = a.provider.toLowerCase().includes('vl') || a.provider.toLowerCase().includes('视觉');
-          addResult(a.provider, a.answer, isBest, isVision);
-        });
-      } else {
-        document.getElementById('results').innerHTML = `<div class="empty"><h2>😕 没有得到答案</h2><p>所有 AI 均未能解答此问题</p></div>`;
-      }
-      
-      loadUsage();
     } catch(e) {
-      document.getElementById('results').innerHTML = `<div class="error-card">网络错误: ${e.message}</div>`;
-    } finally {
+      document.getElementById('results').innerHTML = `<div class="error-card">❌ 网络错误：${e.message}</div>`;
       isLoading = false;
       document.getElementById('send').disabled = false;
+      return;
     }
+    
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      const text = await res.text().catch(() => '');
+      if (res.status === 413 || text.includes('413') || text.includes('Request Entity Too Large')) {
+        document.getElementById('results').innerHTML = `<div class="error-card">❌ 图片太大了，请减少图片数量或压缩后重试</div>`;
+      } else {
+        document.getElementById('results').innerHTML = `<div class="error-card">❌ 服务器错误 (HTTP ${res.status})，请稍后重试</div>`;
+      }
+      isLoading = false;
+      document.getElementById('send').disabled = false;
+      return;
+    }
+    
+    document.getElementById('results').innerHTML = '';
+    
+    if (res.status === 429) {
+      document.getElementById('results').innerHTML = `<div class="error-card">⏰ ${data.message || '今日次数已用完'}</div>`;
+      isLoading = false;
+      document.getElementById('send').disabled = false;
+      return;
+    }
+    
+    if (data.error) {
+      document.getElementById('results').innerHTML = `<div class="error-card">❌ ${data.error}</div>`;
+      isLoading = false;
+      document.getElementById('send').disabled = false;
+      return;
+    }
+    
+    if (data.comparison) {
+      addComparison(data.comparison.summary, data.comparison.consensus);
+    }
+    
+    if (data.answers && data.answers.length > 0) {
+      data.answers.forEach(a => {
+        const isBest = data.comparison?.bestAnswer?.provider === a.provider;
+        const isVision = a.provider.toLowerCase().includes('vl') || a.provider.toLowerCase().includes('视觉');
+        addResult(a.provider, a.answer, isBest, isVision);
+      });
+    } else {
+      document.getElementById('results').innerHTML = `<div class="empty"><h2>😕 没有得到答案</h2><p>所有 AI 均未能解答此问题</p></div>`;
+    }
+    
+    loadUsage();
+    isLoading = false;
+    document.getElementById('send').disabled = false;
   }
 
   document.getElementById('input').addEventListener('keydown', e => {

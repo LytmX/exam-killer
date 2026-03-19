@@ -1,6 +1,6 @@
 /**
  * Exam Killer Backend v6
- * 多 AI 比对 + 图片理解 — Wolfram Alpha + Silicon Flow 多模型(含视觉)
+ * 多 AI 比对 + 图片理解 - Wolfram Alpha + Silicon Flow 多模型(含视觉)
  */
 require('dotenv').config();
 const express = require('express');
@@ -20,6 +20,7 @@ const SILICON_MODELS = {
   'deepseek-r1':   'deepseek-ai/DeepSeek-R1',
   'qwen-14b':      'Qwen/Qwen2.5-14B-Instruct',
   'glm-4':         'zai-org/GLM-4-9B-Chat',
+  'kimi-k2':       'moonshotai/Kimi-K2-Instruct-0905',
   // 视觉模型（支持图片理解）
   'qwen-vl-72b':   'Qwen/Qwen2.5-VL-72B-Instruct',
   'qwen3-vl-32b':  'Qwen/Qwen3-VL-32B-Instruct',
@@ -70,19 +71,19 @@ async function askWolframAlpha(question) {
       appid: WOLFRAM_APP_ID,
       output: 'json',
     })}`;
-    
+
     const response = await axios.get(url, { timeout: 15000 });
     const data = response.data;
     const queryresult = data?.queryresult;
-    
+
     if (!queryresult || queryresult.success === false) {
       return { provider: 'Wolfram Alpha', error: '无法解答此问题', answer: null, confidence: 0 };
     }
-    
+
     const pods = queryresult.pods || [];
     let answer = '';
     let steps = '';
-    
+
     for (const pod of pods) {
       const title = (pod.title || '').toLowerCase();
       const plaintext = pod.subpods?.map(s => s.plaintext).filter(Boolean).join('\n') || '';
@@ -93,7 +94,7 @@ async function askWolframAlpha(question) {
         if (plaintext) steps = plaintext;
       }
     }
-    
+
     if (!answer) {
       for (const pod of pods) {
         const text = pod.subpods?.map(s => s.plaintext).filter(Boolean).join('\n');
@@ -101,8 +102,8 @@ async function askWolframAlpha(question) {
       }
     }
 
-    return { 
-      provider: 'Wolfram Alpha', 
+    return {
+      provider: 'Wolfram Alpha',
       answer: answer || '无解析结果',
       steps: steps || '',
       confidence: answer ? 0.95 : 0.2,
@@ -116,7 +117,7 @@ async function askWolframAlpha(question) {
 async function askSiliconText(question, modelKey) {
   const modelId = SILICON_MODELS[modelKey];
   if (!modelId) return { provider: `Silicon Flow (${modelKey})`, error: '未知模型', answer: null, confidence: 0 };
-  
+
   try {
     const response = await axios.post(
       'https://api.siliconflow.cn/v1/chat/completions',
@@ -136,7 +137,7 @@ async function askSiliconText(question, modelKey) {
         timeout: 90000,
       }
     );
-    
+
     const answer = response.data?.choices?.[0]?.message?.content || '';
     return {
       provider: `Silicon Flow (${modelKey.toUpperCase()})`,
@@ -155,18 +156,18 @@ async function askSiliconText(question, modelKey) {
 async function askSiliconVision(question, images, modelKey) {
   const modelId = SILICON_MODELS[modelKey];
   if (!modelId) return { provider: `Silicon Flow (${modelKey})`, error: '未知模型', answer: null, confidence: 0 };
-  
+
   try {
     // 构建多模态消息内容
     const content = [];
-    
+
     // 文本部分
     let textPrompt = question;
     if (images && images.length > 0) {
       textPrompt = `请看这张图片，解答以下问题。如果图片中有图表、坐标系、表格或示意图，请仔细分析后再作答。\n\n问题：${question}`;
     }
     content.push({ type: 'text', text: textPrompt });
-    
+
     // 图片部分（支持多张）
     if (images && images.length > 0) {
       for (const img of images) {
@@ -179,7 +180,7 @@ async function askSiliconVision(question, images, modelKey) {
         });
       }
     }
-    
+
     const response = await axios.post(
       'https://api.siliconflow.cn/v1/chat/completions',
       {
@@ -195,7 +196,7 @@ async function askSiliconVision(question, images, modelKey) {
         timeout: 120000,
       }
     );
-    
+
     const answer = response.data?.choices?.[0]?.message?.content || '';
     return {
       provider: `Silicon Flow (${modelKey.toUpperCase()} +视觉)`,
@@ -214,9 +215,9 @@ async function askSiliconVision(question, images, modelKey) {
 // ==================== Routes ====================
 
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    version: '6.0.0', 
+  res.json({
+    status: 'ok',
+    version: '6.0.0',
     providers: Object.keys(SILICON_MODELS),
     vision_models: ['qwen-vl-72b', 'qwen-vl-32b', 'qwen3-vl-32b', 'qwen3-vl-8b'],
   });
@@ -248,8 +249,6 @@ app.post('/api/ask', async (req, res) => {
     });
   }
   
-  // providers: wolfram, silicon-deepseek-v3, silicon-qwen-14b, silicon-qwen-vl-72b, ...
-  // images: [{url: 'data:image/...;base64,...'}] 或 [{url: 'https://...'}] 
   const { question, providers = ['wolfram', 'silicon-deepseek-v3', 'silicon-qwen-vl-72b'], images = [] } = req.body;
   
   if (!question?.trim() && images.length === 0) {
@@ -258,26 +257,43 @@ app.post('/api/ask', async (req, res) => {
   
   incrementUsage(userId);
   
+  let finalQuestion = question;
+  let imageDescription = '';
+  
+  // 图片识别阶段：先用视觉模型识别图片内容
+  if (images.length > 0) {
+    try {
+      const descResult = await askSiliconVision(
+        '请仔细描述这张图片的全部内容，包括文字、图表、坐标系、表格、示意图等所有可见信息。用中文详细描述。',
+        images,
+        'qwen-vl-72b'
+      );
+      if (descResult.answer) {
+        imageDescription = `\n\n【图片内容描述】：\n${descResult.answer}\n【图片内容描述结束】`;
+        finalQuestion = (question || '') + imageDescription;
+      }
+    } catch(e) {
+      // 识别失败不影响答题，继续
+    }
+  }
+  
+  // 分发答题阶段：所有模型都收到识别后的文本
   const tasks = [];
   for (const p of providers) {
     if (p === 'wolfram') {
-      // Wolfram 不支持图片，纯文本
-      if (images.length === 0) {
-        tasks.push(askWolframAlpha(question));
-      }
+      // Wolfram 不支持图片，纯文本（如果有图片描述则也可用）
+      tasks.push(askWolframAlpha(question)); // Wolfram 始终用原始题目
     } else if (p.startsWith('silicon-')) {
       const modelKey = p.replace('silicon-', '');
       const modelId = SILICON_MODELS[modelKey];
       if (!modelId) continue;
       
       if (VISION_MODEL_IDS.has(modelId)) {
-        // 视觉模型：传入图片
+        // 视觉模型：直接用图片+原始问题（不做双识别）
         tasks.push(askSiliconVision(question, images, modelKey));
       } else {
-        // 文本模型：如果有图片就跳过（不支持）
-        if (images.length === 0) {
-          tasks.push(askSiliconText(question, modelKey));
-        }
+        // 文本模型：用带图片描述的增强问题
+        tasks.push(askSiliconText(finalQuestion, modelKey));
       }
     }
   }
@@ -286,10 +302,9 @@ app.post('/api/ask', async (req, res) => {
     return res.json({
       question,
       images: images.length,
+      imageDescription: imageDescription ? '(已识别图片)' : '',
       answers: [],
-      comparison: images.length > 0 
-        ? '所选模型均不支持图片，或无可用文本模型' 
-        : '请至少选择一个可用的 AI 模型',
+      comparison: '请至少选择一个可用的 AI 模型',
       bestAnswer: null,
     });
   }
@@ -314,6 +329,7 @@ app.post('/api/ask', async (req, res) => {
   res.json({
     question,
     images: images.length,
+    imageRecognized: !!imageDescription,
     answers,
     comparison,
     bestAnswer: comparison.bestAnswer,
@@ -325,15 +341,15 @@ app.post('/api/ask', async (req, res) => {
 app.post('/api/upload', async (req, res) => {
   const { image } = req.body; // base64 或 URL
   if (!image) return res.status(400).json({ error: 'image 是必填项' });
-  
+
   // 简单验证：是否为有效 base64 或 URL
   const isBase64 = image.startsWith('data:') || /^[A-Za-z0-9+/=]{50,}$/.test(image);
   const isUrl = image.startsWith('http://') || image.startsWith('https://');
-  
+
   if (!isBase64 && !isUrl) {
     return res.status(400).json({ error: '无效的图片格式' });
   }
-  
+
   res.json({ success: true, hasImage: true });
 });
 
@@ -345,24 +361,24 @@ function analyzeComparison(answers) {
       consensus: true,
     };
   }
-  
+
   // 提取数字找共识
-  const texts = answers.map(a => 
+  const texts = answers.map(a =>
     (a.answer || '').toLowerCase()
       .replace(/[^\w\.\-\+\=\≈≈]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
   );
-  
+
   const numbers = texts.map(t => {
     const matches = t.match(/[\d\.\-\+]+/g);
     return matches ? matches[0] : null;
   }).filter(Boolean);
-  
-  const consensusNumber = numbers.length > 1 
-    ? numbers.find(n => numbers.filter(x => x === n).length > answers.length / 2) 
+
+  const consensusNumber = numbers.length > 1
+    ? numbers.find(n => numbers.filter(x => x === n).length > answers.length / 2)
     : null;
-  
+
   if (consensusNumber) {
     const agreeing = answers.filter(a => (a.answer || '').includes(consensusNumber));
     return {
@@ -372,7 +388,7 @@ function analyzeComparison(answers) {
       consensusNumber,
     };
   }
-  
+
   const best = answers.reduce((a, b) => (a.confidence > b.confidence ? a : b));
   return {
     summary: `${answers.length} 个 AI 给出不同答案，建议核实`,
